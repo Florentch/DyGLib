@@ -9,6 +9,9 @@ import shutil
 import json
 import torch
 import torch.nn as nn
+import matplotlib.pyplot as plt
+import pandas as pd 
+from scipy.ndimage import median_filter
 
 from models.TGAT import TGAT
 from models.MemoryModel import MemoryModel, compute_src_dst_node_time_shifts
@@ -92,27 +95,19 @@ if __name__ == "__main__":
         logger.info(f"********** Run {run + 1} starts. **********")
 
         logger.info(f'configuration is {args}')
+        # Variables for tracking loss
+        train_loss_history = []  
+        val_loss_history = []   
+        train_loss_per_batch = []  
+        val_loss_per_batch = []
+        
+        loss_save_folder = f"./loss/{args.model_name}/{args.dataset_name}/{args.save_model_name}/"
+        os.makedirs(loss_save_folder, exist_ok=True)
 
         # create model
         if args.model_name == 'TGAT':
             dynamic_backbone = TGAT(node_raw_features=node_raw_features, edge_raw_features=edge_raw_features, neighbor_sampler=train_neighbor_sampler,
                                     time_feat_dim=args.time_feat_dim, num_layers=args.num_layers, num_heads=args.num_heads, dropout=args.dropout, device=args.device)
-        elif args.model_name in ['JODIE', 'DyRep', 'TGN']:
-            # four floats that represent the mean and standard deviation of source and destination node time shifts in the training data, which is used for JODIE
-            src_node_mean_time_shift, src_node_std_time_shift, dst_node_mean_time_shift_dst, dst_node_std_time_shift = \
-                compute_src_dst_node_time_shifts(train_data.src_node_ids, train_data.dst_node_ids, train_data.node_interact_times)
-            dynamic_backbone = MemoryModel(node_raw_features=node_raw_features, edge_raw_features=edge_raw_features, neighbor_sampler=train_neighbor_sampler,
-                                           time_feat_dim=args.time_feat_dim, model_name=args.model_name, num_layers=args.num_layers, num_heads=args.num_heads,
-                                           dropout=args.dropout, src_node_mean_time_shift=src_node_mean_time_shift, src_node_std_time_shift=src_node_std_time_shift,
-                                           dst_node_mean_time_shift_dst=dst_node_mean_time_shift_dst, dst_node_std_time_shift=dst_node_std_time_shift, device=args.device)
-        elif args.model_name == 'CAWN':
-            dynamic_backbone = CAWN(node_raw_features=node_raw_features, edge_raw_features=edge_raw_features, neighbor_sampler=train_neighbor_sampler,
-                                    time_feat_dim=args.time_feat_dim, position_feat_dim=args.position_feat_dim, walk_length=args.walk_length,
-                                    num_walk_heads=args.num_walk_heads, dropout=args.dropout, device=args.device)
-        elif args.model_name == 'TCL':
-            dynamic_backbone = TCL(node_raw_features=node_raw_features, edge_raw_features=edge_raw_features, neighbor_sampler=train_neighbor_sampler,
-                                   time_feat_dim=args.time_feat_dim, num_layers=args.num_layers, num_heads=args.num_heads,
-                                   num_depths=args.num_neighbors + 1, dropout=args.dropout, device=args.device)
         elif args.model_name == 'GraphMixer':
             dynamic_backbone = GraphMixer(node_raw_features=node_raw_features, edge_raw_features=edge_raw_features, neighbor_sampler=train_neighbor_sampler,
                                           time_feat_dim=args.time_feat_dim, num_tokens=args.num_neighbors, num_layers=args.num_layers, dropout=args.dropout, device=args.device)
@@ -149,13 +144,10 @@ if __name__ == "__main__":
             if args.model_name in ['DyRep', 'TGAT', 'TGN', 'CAWN', 'TCL', 'GraphMixer', 'DyGFormer']:
                 # training, only use training graph
                 model[0].set_neighbor_sampler(train_neighbor_sampler)
-            if args.model_name in ['JODIE', 'DyRep', 'TGN']:
-                # reinitialize memory of memory-based models at the start of each epoch
-                model[0].memory_bank.__init_memory_bank__()
 
             # store train losses and metrics
             train_losses, train_metrics = [], []
-            train_idx_data_loader_tqdm = tqdm(train_idx_data_loader, ncols=120)
+            train_idx_data_loader_tqdm = tqdm(train_idx_data_loader, ncols=120, mininterval=240)
             for batch_idx, train_data_indices in enumerate(train_idx_data_loader_tqdm):
                 train_data_indices = train_data_indices.numpy()
                 batch_src_node_ids, batch_dst_node_ids, batch_node_interact_times, batch_edge_ids = \
@@ -182,28 +174,6 @@ if __name__ == "__main__":
                         model[0].compute_src_dst_node_temporal_embeddings(src_node_ids=batch_neg_src_node_ids,
                                                                           dst_node_ids=batch_neg_dst_node_ids,
                                                                           node_interact_times=batch_node_interact_times,
-                                                                          num_neighbors=args.num_neighbors)
-                elif args.model_name in ['JODIE', 'DyRep', 'TGN']:
-                    # note that negative nodes do not change the memories while the positive nodes change the memories,
-                    # we need to first compute the embeddings of negative nodes for memory-based models
-                    # get temporal embedding of negative source and negative destination nodes
-                    # two Tensors, with shape (batch_size, node_feat_dim)
-                    batch_neg_src_node_embeddings, batch_neg_dst_node_embeddings = \
-                        model[0].compute_src_dst_node_temporal_embeddings(src_node_ids=batch_neg_src_node_ids,
-                                                                          dst_node_ids=batch_neg_dst_node_ids,
-                                                                          node_interact_times=batch_node_interact_times,
-                                                                          edge_ids=None,
-                                                                          edges_are_positive=False,
-                                                                          num_neighbors=args.num_neighbors)
-
-                    # get temporal embedding of source and destination nodes
-                    # two Tensors, with shape (batch_size, node_feat_dim)
-                    batch_src_node_embeddings, batch_dst_node_embeddings = \
-                        model[0].compute_src_dst_node_temporal_embeddings(src_node_ids=batch_src_node_ids,
-                                                                          dst_node_ids=batch_dst_node_ids,
-                                                                          node_interact_times=batch_node_interact_times,
-                                                                          edge_ids=batch_edge_ids,
-                                                                          edges_are_positive=True,
                                                                           num_neighbors=args.num_neighbors)
                 elif args.model_name in ['GraphMixer']:
                     # get temporal embedding of source and destination nodes
@@ -256,17 +226,15 @@ if __name__ == "__main__":
                 loss.backward()
                 optimizer.step()
 
-                train_idx_data_loader_tqdm.set_description(f'Epoch: {epoch + 1}, train for the {batch_idx + 1}-th batch, train loss: {loss.item()}')
+                if batch_idx % 1000 == 0:  
+                    train_idx_data_loader_tqdm.set_description(f'evaluate for the {batch_idx + 1}-th batch, evaluate loss: {loss.item()}')
+                train_loss_per_batch.append(loss.item())
 
-                if args.model_name in ['JODIE', 'DyRep', 'TGN']:
-                    # detach the memories and raw messages of nodes in the memory bank after each batch, so we don't back propagate to the start of time
-                    model[0].memory_bank.detach_memory_bank()
 
-            if args.model_name in ['JODIE', 'DyRep', 'TGN']:
-                # backup memory bank after training so it can be used for new validation nodes
-                train_backup_memory_bank = model[0].memory_bank.backup_memory_bank()
+            epoch_train_loss = np.mean(train_losses)
+            train_loss_history.append(epoch_train_loss)
 
-            val_losses, val_metrics = evaluate_model_link_prediction(model_name=args.model_name,
+            val_losses, val_metrics, val_batch_losses = evaluate_model_link_prediction(model_name=args.model_name,
                                                                      model=model,
                                                                      neighbor_sampler=full_neighbor_sampler,
                                                                      evaluate_idx_data_loader=val_idx_data_loader,
@@ -274,14 +242,14 @@ if __name__ == "__main__":
                                                                      evaluate_data=val_data,
                                                                      loss_func=loss_func,
                                                                      num_neighbors=args.num_neighbors,
-                                                                     time_gap=args.time_gap)
+                                                                     time_gap=args.time_gap, 
+                                                                     temp=args.temperature,
+                                                                     return_batch_losses=True)
 
-            if args.model_name in ['JODIE', 'DyRep', 'TGN']:
-                # backup memory bank after validating so it can be used for testing nodes (since test edges are strictly later in time than validation edges)
-                val_backup_memory_bank = model[0].memory_bank.backup_memory_bank()
 
-                # reload training memory bank for new validation nodes
-                model[0].memory_bank.reload_memory_bank(train_backup_memory_bank)
+            val_loss_per_batch.extend(val_batch_losses)
+            epoch_val_loss = np.mean(val_losses)
+            val_loss_history.append(epoch_val_loss)
 
             new_node_val_losses, new_node_val_metrics = evaluate_model_link_prediction(model_name=args.model_name,
                                                                                        model=model,
@@ -291,12 +259,8 @@ if __name__ == "__main__":
                                                                                        evaluate_data=new_node_val_data,
                                                                                        loss_func=loss_func,
                                                                                        num_neighbors=args.num_neighbors,
-                                                                                       time_gap=args.time_gap)
+                                                                                       time_gap=args.time_gap, temp=args.temperature)
 
-            if args.model_name in ['JODIE', 'DyRep', 'TGN']:
-                # reload validation memory bank for testing nodes or saving models
-                # note that since model treats memory as parameters, we need to reload the memory to val_backup_memory_bank for saving models
-                model[0].memory_bank.reload_memory_bank(val_backup_memory_bank)
 
             logger.info(f'Epoch: {epoch + 1}, learning rate: {optimizer.param_groups[0]["lr"]}, train loss: {np.mean(train_losses):.4f}')
             for metric_name in train_metrics[0].keys():
@@ -318,11 +282,8 @@ if __name__ == "__main__":
                                                                            evaluate_data=test_data,
                                                                            loss_func=loss_func,
                                                                            num_neighbors=args.num_neighbors,
-                                                                           time_gap=args.time_gap)
+                                                                           time_gap=args.time_gap, temp=args.temperature)
 
-                if args.model_name in ['JODIE', 'DyRep', 'TGN']:
-                    # reload validation memory bank for new testing nodes
-                    model[0].memory_bank.reload_memory_bank(val_backup_memory_bank)
 
                 new_node_test_losses, new_node_test_metrics = evaluate_model_link_prediction(model_name=args.model_name,
                                                                                              model=model,
@@ -332,12 +293,7 @@ if __name__ == "__main__":
                                                                                              evaluate_data=new_node_test_data,
                                                                                              loss_func=loss_func,
                                                                                              num_neighbors=args.num_neighbors,
-                                                                                             time_gap=args.time_gap)
-
-                if args.model_name in ['JODIE', 'DyRep', 'TGN']:
-                    # reload validation memory bank for testing nodes or saving models
-                    # note that since model treats memory as parameters, we need to reload the memory to val_backup_memory_bank for saving models
-                    model[0].memory_bank.reload_memory_bank(val_backup_memory_bank)
+                                                                                             time_gap=args.time_gap, temp=args.temperature)
 
                 logger.info(f'test loss: {np.mean(test_losses):.4f}')
                 for metric_name in test_metrics[0].keys():
@@ -355,6 +311,67 @@ if __name__ == "__main__":
             if early_stop:
                 break
 
+        kernel_size = min(1000, len(train_loss_per_batch)) 
+        if kernel_size >= 3:
+            train_loss_smoothed = median_filter(train_loss_per_batch, size=kernel_size)
+        else:
+            train_loss_smoothed = train_loss_per_batch
+            
+        
+        # Dataframe for loss per batch
+        df_train_loss_per_batch = pd.DataFrame({
+            'batch': range(1, len(train_loss_per_batch) + 1),
+            'raw_loss': train_loss_per_batch,
+            'smoothed_loss': train_loss_smoothed
+        })
+
+        
+        # Save csv 
+        df_train_loss_per_batch.to_csv(f"{loss_save_folder}train_loss_per_batch_run_{run}.csv", index=False)
+        
+        plt.figure(figsize=(15, 10))
+        
+        # Subplot 1: training loss per batch
+        plt.subplot(3, 1, 1)
+        batch_numbers_train = range(1, len(train_loss_per_batch) + 1)
+        plt.plot(batch_numbers_train, train_loss_per_batch, 'b-', alpha=0.3, linewidth=0.8, label='Train Loss (raw)')
+        plt.plot(batch_numbers_train, train_loss_smoothed, 'b-', linewidth=2, label='Train Loss (smoothed)')
+        plt.xlabel('Batch Number')
+        plt.ylabel('Loss')
+        plt.title(f'Training Loss per Batch - {args.model_name} on {args.dataset_name} (Run {run+1})')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(f"{loss_save_folder}loss_curves_single_epoch_run_{run}.png", dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        plt.figure(figsize=(12, 8))
+        
+        plt.subplot(2, 1, 1)
+        plt.plot(batch_numbers_train, train_loss_smoothed, 'b-', linewidth=2, label='Train Loss (smoothed)')
+        plt.fill_between(batch_numbers_train, train_loss_smoothed, alpha=0.3)
+        plt.xlabel('Batch Number')
+        plt.ylabel('Loss')
+        plt.title(f'Training Loss Evolution - {args.model_name} on {args.dataset_name} (Run {run+1})')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # Add stats
+        train_final_loss = train_loss_smoothed[-1] if len(train_loss_smoothed) > 0 else 0
+        train_min_loss = min(train_loss_smoothed) if len(train_loss_smoothed) > 0 else 0
+        train_max_loss = max(train_loss_smoothed) if len(train_loss_smoothed) > 0 else 0
+        
+        plt.text(0.02, 0.98, f'Final Loss: {train_final_loss:.4f}\nMin Loss: {train_min_loss:.4f}\nMax Loss: {train_max_loss:.4f}', 
+                transform=plt.gca().transAxes, verticalalignment='top', 
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+        plt.tight_layout()
+        plt.savefig(f"{loss_save_folder}loss_evolution_with_stats_run_{run}.png", dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        logger.info(f'Single epoch loss data and plots saved in {loss_save_folder}')
+        logger.info(f'Training batches: {len(train_loss_per_batch)}, Validation batches: {len(val_loss_per_batch)}')
         # load the best model
         early_stopping.load_checkpoint(model)
 
@@ -371,7 +388,7 @@ if __name__ == "__main__":
                                                                      evaluate_data=val_data,
                                                                      loss_func=loss_func,
                                                                      num_neighbors=args.num_neighbors,
-                                                                     time_gap=args.time_gap)
+                                                                     time_gap=args.time_gap, temp=args.temperature)
 
             new_node_val_losses, new_node_val_metrics = evaluate_model_link_prediction(model_name=args.model_name,
                                                                                        model=model,
@@ -381,11 +398,8 @@ if __name__ == "__main__":
                                                                                        evaluate_data=new_node_val_data,
                                                                                        loss_func=loss_func,
                                                                                        num_neighbors=args.num_neighbors,
-                                                                                       time_gap=args.time_gap)
+                                                                                       time_gap=args.time_gap, temp=args.temperature)
 
-        if args.model_name in ['JODIE', 'DyRep', 'TGN']:
-            # the memory in the best model has seen the validation edges, we need to backup the memory for new testing nodes
-            val_backup_memory_bank = model[0].memory_bank.backup_memory_bank()
 
         test_losses, test_metrics = evaluate_model_link_prediction(model_name=args.model_name,
                                                                    model=model,
@@ -395,11 +409,8 @@ if __name__ == "__main__":
                                                                    evaluate_data=test_data,
                                                                    loss_func=loss_func,
                                                                    num_neighbors=args.num_neighbors,
-                                                                   time_gap=args.time_gap)
+                                                                   time_gap=args.time_gap, temp=args.temperature)
 
-        if args.model_name in ['JODIE', 'DyRep', 'TGN']:
-            # reload validation memory bank for new testing nodes
-            model[0].memory_bank.reload_memory_bank(val_backup_memory_bank)
 
         new_node_test_losses, new_node_test_metrics = evaluate_model_link_prediction(model_name=args.model_name,
                                                                                      model=model,
@@ -409,7 +420,7 @@ if __name__ == "__main__":
                                                                                      evaluate_data=new_node_test_data,
                                                                                      loss_func=loss_func,
                                                                                      num_neighbors=args.num_neighbors,
-                                                                                     time_gap=args.time_gap)
+                                                                                     time_gap=args.time_gap, temp=args.temperature)
         # store the evaluation metrics at the current run
         val_metric_dict, new_node_val_metric_dict, test_metric_dict, new_node_test_metric_dict = {}, {}, {}, {}
 
