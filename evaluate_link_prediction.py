@@ -20,6 +20,7 @@ from evaluate_models_utils import evaluate_model_link_prediction, evaluate_edge_
 from utils.DataLoader import get_idx_data_loader, get_link_prediction_data
 from utils.EarlyStopping import EarlyStopping
 from utils.load_configs import get_link_prediction_args
+from evaluate_anomaly_ts import timestamp_anomaly_result
 
 if __name__ == "__main__":
 
@@ -38,24 +39,10 @@ if __name__ == "__main__":
 
     # initialize negative samplers, set seeds for validation and testing so negatives are the same across different runs
     # in the inductive setting, negatives are sampled only amongst other new nodes
-    if args.negative_sample_strategy != 'random':
-        val_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=full_data.src_node_ids, dst_node_ids=full_data.dst_node_ids,
-                                                   interact_times=full_data.node_interact_times, last_observed_time=train_data.node_interact_times[-1],
-                                                   negative_sample_strategy=args.negative_sample_strategy, seed=0)
-        new_node_val_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=new_node_val_data.src_node_ids, dst_node_ids=new_node_val_data.dst_node_ids,
-                                                            interact_times=new_node_val_data.node_interact_times, last_observed_time=train_data.node_interact_times[-1],
-                                                            negative_sample_strategy=args.negative_sample_strategy, seed=1)
-        test_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=full_data.src_node_ids, dst_node_ids=full_data.dst_node_ids,
-                                                    interact_times=full_data.node_interact_times, last_observed_time=val_data.node_interact_times[-1],
-                                                    negative_sample_strategy=args.negative_sample_strategy, seed=2)
-        new_node_test_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=new_node_test_data.src_node_ids, dst_node_ids=new_node_test_data.dst_node_ids,
-                                                             interact_times=new_node_test_data.node_interact_times, last_observed_time=val_data.node_interact_times[-1],
-                                                             negative_sample_strategy=args.negative_sample_strategy, seed=3)
-    else:
-        val_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=full_data.src_node_ids, dst_node_ids=full_data.dst_node_ids, seed=0)
-        new_node_val_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=new_node_val_data.src_node_ids, dst_node_ids=new_node_val_data.dst_node_ids, seed=1)
-        test_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=full_data.src_node_ids, dst_node_ids=full_data.dst_node_ids, seed=2)
-        new_node_test_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=new_node_test_data.src_node_ids, dst_node_ids=new_node_test_data.dst_node_ids, seed=3)
+    val_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=full_data.src_node_ids, dst_node_ids=full_data.dst_node_ids, seed=0)
+    new_node_val_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=new_node_val_data.src_node_ids, dst_node_ids=new_node_val_data.dst_node_ids, seed=1)
+    test_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=full_data.src_node_ids, dst_node_ids=full_data.dst_node_ids, seed=2)
+    new_node_test_neg_edge_sampler = NegativeEdgeSampler(src_node_ids=new_node_test_data.src_node_ids, dst_node_ids=new_node_test_data.dst_node_ids, seed=3)
 
     # get data loaders
     val_idx_data_loader = get_idx_data_loader(indices_list=list(range(len(val_data.src_node_ids))), batch_size=args.batch_size, shuffle=False)
@@ -107,22 +94,6 @@ if __name__ == "__main__":
             if args.model_name == 'TGAT':
                 dynamic_backbone = TGAT(node_raw_features=node_raw_features, edge_raw_features=edge_raw_features, neighbor_sampler=full_neighbor_sampler,
                                         time_feat_dim=args.time_feat_dim, num_layers=args.num_layers, num_heads=args.num_heads, dropout=args.dropout, device=args.device)
-            elif args.model_name in ['JODIE', 'DyRep', 'TGN']:
-                # four floats that represent the mean and standard deviation of source and destination node time shifts in the training data, which is used for JODIE
-                src_node_mean_time_shift, src_node_std_time_shift, dst_node_mean_time_shift_dst, dst_node_std_time_shift = \
-                    compute_src_dst_node_time_shifts(train_data.src_node_ids, train_data.dst_node_ids, train_data.node_interact_times)
-                dynamic_backbone = MemoryModel(node_raw_features=node_raw_features, edge_raw_features=edge_raw_features, neighbor_sampler=full_neighbor_sampler,
-                                               time_feat_dim=args.time_feat_dim, model_name=args.model_name, num_layers=args.num_layers, num_heads=args.num_heads,
-                                               dropout=args.dropout, src_node_mean_time_shift=src_node_mean_time_shift, src_node_std_time_shift=src_node_std_time_shift,
-                                               dst_node_mean_time_shift_dst=dst_node_mean_time_shift_dst, dst_node_std_time_shift=dst_node_std_time_shift, device=args.device)
-            elif args.model_name == 'CAWN':
-                dynamic_backbone = CAWN(node_raw_features=node_raw_features, edge_raw_features=edge_raw_features, neighbor_sampler=full_neighbor_sampler,
-                                        time_feat_dim=args.time_feat_dim, position_feat_dim=args.position_feat_dim, walk_length=args.walk_length,
-                                        num_walk_heads=args.num_walk_heads, dropout=args.dropout, device=args.device)
-            elif args.model_name == 'TCL':
-                dynamic_backbone = TCL(node_raw_features=node_raw_features, edge_raw_features=edge_raw_features, neighbor_sampler=full_neighbor_sampler,
-                                       time_feat_dim=args.time_feat_dim, num_layers=args.num_layers, num_heads=args.num_heads,
-                                       num_depths=args.num_neighbors + 1, dropout=args.dropout, device=args.device)
             elif args.model_name == 'GraphMixer':
                 dynamic_backbone = GraphMixer(node_raw_features=node_raw_features, edge_raw_features=edge_raw_features, neighbor_sampler=full_neighbor_sampler,
                                               time_feat_dim=args.time_feat_dim, num_tokens=args.num_neighbors, num_layers=args.num_layers, dropout=args.dropout, device=args.device)
@@ -147,13 +118,6 @@ if __name__ == "__main__":
             early_stopping.load_checkpoint(model, map_location='cpu')
 
             model = convert_to_gpu(model, device=args.device)
-            # put the node raw messages of memory-based models on device
-            if args.model_name in ['JODIE', 'DyRep', 'TGN']:
-                for node_id, node_raw_messages in model[0].memory_bank.node_raw_messages.items():
-                    new_node_raw_messages = []
-                    for node_raw_message in node_raw_messages:
-                        new_node_raw_messages.append((node_raw_message[0].to(args.device), node_raw_message[1]))
-                    model[0].memory_bank.node_raw_messages[node_id] = new_node_raw_messages
 
             loss_func = nn.BCELoss()
 
@@ -162,7 +126,7 @@ if __name__ == "__main__":
 
             # the saved best model of memory-based models cannot perform validation since the stored memory has been updated by validation data
             if args.model_name not in ['JODIE', 'DyRep', 'TGN']:
-                val_losses, val_metrics = evaluate_model_link_prediction(model_name=args.model_name,
+                val_losses, val_metrics, val_predicted_links, val_actual_links, non_exist_links= evaluate_model_link_prediction(model_name=args.model_name,
                                                                          model=model,
                                                                          neighbor_sampler=full_neighbor_sampler,
                                                                          evaluate_idx_data_loader=val_idx_data_loader,
@@ -170,7 +134,9 @@ if __name__ == "__main__":
                                                                          evaluate_data=val_data,
                                                                          loss_func=loss_func,
                                                                          num_neighbors=args.num_neighbors,
-                                                                         time_gap=args.time_gap)
+                                                                         time_gap=args.time_gap,
+                                                                         full_return= True, temp=args.temperature)
+                timestamp_anomaly_result(val_predicted_links, val_actual_links, non_exist_links, validate = True, names = (args.dataset_name,args.model_name, args.temperature))
 
                 new_node_val_losses, new_node_val_metrics = evaluate_model_link_prediction(model_name=args.model_name,
                                                                                            model=model,
@@ -180,13 +146,9 @@ if __name__ == "__main__":
                                                                                            evaluate_data=new_node_val_data,
                                                                                            loss_func=loss_func,
                                                                                            num_neighbors=args.num_neighbors,
-                                                                                           time_gap=args.time_gap)
+                                                                                           time_gap=args.time_gap, temp=args.temperature)
 
-            if args.model_name in ['JODIE', 'DyRep', 'TGN']:
-                # the memory in the best model has seen the validation edges, we need to backup the memory for new testing nodes
-                val_backup_memory_bank = model[0].memory_bank.backup_memory_bank()
-
-            test_losses, test_metrics = evaluate_model_link_prediction(model_name=args.model_name,
+            test_losses, test_metrics, test_predicted_links, test_actual_links, non_exist_links = evaluate_model_link_prediction(model_name=args.model_name,
                                                                        model=model,
                                                                        neighbor_sampler=full_neighbor_sampler,
                                                                        evaluate_idx_data_loader=test_idx_data_loader,
@@ -194,11 +156,9 @@ if __name__ == "__main__":
                                                                        evaluate_data=test_data,
                                                                        loss_func=loss_func,
                                                                        num_neighbors=args.num_neighbors,
-                                                                       time_gap=args.time_gap)
-
-            if args.model_name in ['JODIE', 'DyRep', 'TGN']:
-                # reload validation memory bank for new testing nodes
-                model[0].memory_bank.reload_memory_bank(val_backup_memory_bank)
+                                                                       time_gap=args.time_gap,
+                                                                       full_return= True, temp=args.temperature)
+            timestamp_anomaly_result(test_predicted_links, test_actual_links, non_exist_links, validate = False, names = (args.dataset_name,args.model_name, args.temperature))
 
             new_node_test_losses, new_node_test_metrics = evaluate_model_link_prediction(model_name=args.model_name,
                                                                                          model=model,
@@ -208,22 +168,9 @@ if __name__ == "__main__":
                                                                                          evaluate_data=new_node_test_data,
                                                                                          loss_func=loss_func,
                                                                                          num_neighbors=args.num_neighbors,
-                                                                                         time_gap=args.time_gap)
+                                                                                         time_gap=args.time_gap, temp=args.temperature)
             # store the evaluation metrics at the current run
             val_metric_dict, new_node_val_metric_dict, test_metric_dict, new_node_test_metric_dict = {}, {}, {}, {}
-
-            if args.model_name not in ['JODIE', 'DyRep', 'TGN']:
-                logger.info(f'validate loss: {np.mean(val_losses):.4f}')
-                for metric_name in val_metrics[0].keys():
-                    average_val_metric = np.mean([val_metric[metric_name] for val_metric in val_metrics])
-                    logger.info(f'validate {metric_name}, {average_val_metric:.4f}')
-                    val_metric_dict[metric_name] = average_val_metric
-
-                logger.info(f'new node validate loss: {np.mean(new_node_val_losses):.4f}')
-                for metric_name in new_node_val_metrics[0].keys():
-                    average_new_node_val_metric = np.mean([new_node_val_metric[metric_name] for new_node_val_metric in new_node_val_metrics])
-                    logger.info(f'new node validate {metric_name}, {average_new_node_val_metric:.4f}')
-                    new_node_val_metric_dict[metric_name] = average_new_node_val_metric
 
             logger.info(f'test loss: {np.mean(test_losses):.4f}')
             for metric_name in test_metrics[0].keys():
@@ -252,18 +199,10 @@ if __name__ == "__main__":
                 logger.removeHandler(ch)
 
             # save model result
-            if args.model_name not in ['JODIE', 'DyRep', 'TGN']:
-                result_json = {
-                    "validate metrics": {metric_name: f'{val_metric_dict[metric_name]:.4f}' for metric_name in val_metric_dict},
-                    "new node validate metrics": {metric_name: f'{new_node_val_metric_dict[metric_name]:.4f}' for metric_name in new_node_val_metric_dict},
-                    "test metrics": {metric_name: f'{test_metric_dict[metric_name]:.4f}' for metric_name in test_metric_dict},
-                    "new node test metrics": {metric_name: f'{new_node_test_metric_dict[metric_name]:.4f}' for metric_name in new_node_test_metric_dict}
-                }
-            else:
-                result_json = {
-                    "test metrics": {metric_name: f'{test_metric_dict[metric_name]:.4f}' for metric_name in test_metric_dict},
-                    "new node test metrics": {metric_name: f'{new_node_test_metric_dict[metric_name]:.4f}' for metric_name in new_node_test_metric_dict}
-                }
+            result_json = {
+                "test metrics": {metric_name: f'{test_metric_dict[metric_name]:.4f}' for metric_name in test_metric_dict},
+                "new node test metrics": {metric_name: f'{new_node_test_metric_dict[metric_name]:.4f}' for metric_name in new_node_test_metric_dict}
+            }
             result_json = json.dumps(result_json, indent=4)
 
             save_result_folder = f"./saved_results/{args.model_name}/{args.dataset_name}"
